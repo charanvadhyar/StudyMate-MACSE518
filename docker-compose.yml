@@ -1,0 +1,16 @@
+# Cassandra 5.0 is needed for the SAI vector-search baseline.
+# The smdb index itself only uses plain tables and also runs on 4.1.
+services:
+  cassandra:
+    image: cassandra:5.0
+    container_name: smdb-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=smdb
+      - MAX_HEAP_SIZE=2G
+      - HEAP_NEWSIZE=400M
+    volumes:
+      - smdb-cassandra-data:/var/lib/cassandra
+volumes:
+  smdb-cassandra-data:

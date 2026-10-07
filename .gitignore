@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+data/
+*.pkl
+*.npz
+*.npy
+kernel/target/
+*.egg-info/
+.pytest_cache/
+run_log.txt
