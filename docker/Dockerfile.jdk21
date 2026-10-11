@@ -1,0 +1,13 @@
+# EXPERIMENT: Cassandra 5.0 on Java 21, so that jvector (the engine behind SAI vector search)
+# can use the SIMD Vector API, which needs Java 20+. Stock Cassandra 5.0 supports Java 11/17
+# only, so this is an UNSUPPORTED configuration, used solely to give the SAI baseline its
+# best case. If the node does not start, that is the answer: report the stock-image numbers.
+FROM eclipse-temurin:21-jdk AS jdk
+FROM cassandra:5.0
+COPY --from=jdk /opt/java/openjdk /opt/java/openjdk21
+ENV JAVA_HOME=/opt/java/openjdk21
+ENV PATH=/opt/java/openjdk21/bin:$PATH
+# cassandra.in.sh refuses unsupported Java versions unless this is set
+ENV CASSANDRA_JDK_UNSUPPORTED=true
+# Java 18+ refuses System.setSecurityManager (Cassandra installs one) unless explicitly allowed
+ENV JVM_EXTRA_OPTS="--add-modules jdk.incubator.vector -Djava.security.manager=allow"

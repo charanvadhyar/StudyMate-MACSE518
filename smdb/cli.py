@@ -2,6 +2,7 @@
 
   python -m smdb.cli init                      create keyspace and tables
   python -m smdb.cli train --vectors v.npy     train a quantizer and store it
+  python -m smdb.cli load --file q.npz         store an already trained quantizer (.npz)
   python -m smdb.cli info                      show the stored index configuration
 
 `--vectors` is a float32 .npy of token vectors [n, dim] sampled from the corpus the
@@ -20,7 +21,7 @@ from .quantizer import Quantizer
 def _store(args):
     from .store import CassandraStore
     return CassandraStore(contact_points=args.hosts.split(","), port=args.port,
-                          keyspace=args.keyspace, local_dc=args.dc)
+                          keyspace=args.keyspace, local_dc=args.dc, replication_factor=args.rf)
 
 
 def main(argv=None) -> None:
@@ -30,9 +31,12 @@ def main(argv=None) -> None:
     ap.add_argument("--keyspace", default="smdb")
     ap.add_argument("--dc", default="datacenter1")
     ap.add_argument("--index-id", default="default")
+    ap.add_argument("--rf", type=int, default=1, help="replication factor if the keyspace is created")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     sub.add_parser("info")
+    ld = sub.add_parser("load")
+    ld.add_argument("--file", required=True, help="quantizer .npz written by Quantizer.save / the bench scripts")
     t = sub.add_parser("train")
     t.add_argument("--vectors", required=True)
     t.add_argument("--k-ivf", type=int, default=1024)
@@ -50,6 +54,12 @@ def main(argv=None) -> None:
         q = store.load_quantizer(args.index_id)
         print("no quantizer stored" if q is None else q.cfg)
         store.close()
+    elif args.cmd == "load":
+        q = Quantizer.load(args.file)
+        store = _store(args)
+        store.save_quantizer(args.index_id, q)
+        store.close()
+        print(f"stored quantizer {args.index_id!r} from {args.file}: {q.cfg}")
     elif args.cmd == "train":
         vectors = np.load(args.vectors)
         cfg = IndexConfig(dim=vectors.shape[1], k_ivf=args.k_ivf, m_pq=args.m_pq,

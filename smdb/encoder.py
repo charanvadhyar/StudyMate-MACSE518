@@ -1,24 +1,32 @@
 """Text -> ColBERT token vectors.
 
-ColbertEncoder is ported from colvec/encoder.py. Two marker modes:
+ColbertEncoder loads checkpoints in the Stanford ColBERT format (BERT weights plus a
+`linear.weight` projection), e.g. colbert-ir/colbertv2.0 and answerdotai/answerai-colbert-small-v1.
 
-  markers="legacy"   colvec behaviour: the literal text "[Q] " / "[D] " is prefixed and
-                     tokenized as ordinary word pieces. Reproduces colvec's numbers.
-  markers="colbert"  the reference ColBERT convention: the special tokens [unused0]
-                     (queries) and [unused1] (documents) are inserted after [CLS].
-                     Not yet measured here; A/B it before making it the default.
+  markers="legacy"   colvec behaviour: the literal text "[Q] " / "[D] " is prefixed and tokenized
+                     as ordinary word pieces; [CLS] and [SEP] vectors are dropped. Reproduces
+                     colvec's numbers (0.670 nDCG@10 exact on SciFact with colbertv2.0).
+  markers="colbert"  the reference ColBERT conventions: [unused0] / [unused1] marker tokens after
+                     [CLS]; queries padded to query_maxlen with [MASK] (not attended to, but their
+                     vectors are kept); punctuation vectors dropped from documents; [CLS], marker
+                     and [SEP] vectors kept. This is what published numbers are measured with.
 
-HashEncoder is a deterministic stand-in with no model download. It is for wiring
-tests only and has no retrieval quality.
+HashEncoder is a deterministic stand-in with no model download. It is for wiring tests only
+and has no retrieval quality.
 """
 from __future__ import annotations
 
 import hashlib
 import re
+import string
 
 import numpy as np
 
 DEFAULT_MODEL = "colbert-ir/colbertv2.0"
+
+
+def model_tag(model_name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", model_name.split("/")[-1].lower()).strip("_")
 
 
 class ColbertEncoder:
@@ -42,6 +50,9 @@ class ColbertEncoder:
         self.tok = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).eval().to(device)
         state = load_file(hf_hub_download(repo_id=model_name, filename="model.safetensors"))
+        if "linear.weight" not in state:
+            raise ValueError(f"{model_name} has no 'linear.weight'; it is not a Stanford-format "
+                             "ColBERT checkpoint and needs a different loader (e.g. PyLate)")
         w = state["linear.weight"]
         self.linear = nn.Linear(w.shape[1], w.shape[0], bias=False)
         self.linear.weight.data = w
@@ -49,62 +60,70 @@ class ColbertEncoder:
         self.dim = int(w.shape[0])
         self._q_marker = self.tok.convert_tokens_to_ids("[unused0]")
         self._d_marker = self.tok.convert_tokens_to_ids("[unused1]")
+        self._skip = {self.tok.encode(ch, add_special_tokens=False)[0] for ch in string.punctuation}
 
-    # ------------------------------------------------------------- tokenizing
-    def _ids(self, text: str, is_query: bool, maxlen: int) -> list[int]:
-        """Token ids including [CLS], marker and [SEP], truncated to maxlen."""
-        if self.markers == "legacy":
-            prefix = "[Q] " if is_query else "[D] "
-            return self.tok(prefix + text, truncation=True, max_length=maxlen)["input_ids"]
-        body = self.tok(text, add_special_tokens=False, truncation=True,
-                        max_length=maxlen - 3)["input_ids"]
-        marker = self._q_marker if is_query else self._d_marker
-        return [self.tok.cls_token_id, marker] + body + [self.tok.sep_token_id]
-
-    def _run(self, batch_ids: list[list[int]]) -> list[np.ndarray]:
-        """Encode id sequences; returns per-sequence vectors without [CLS] and [SEP]."""
+    # ------------------------------------------------------------- internals
+    def _forward(self, ids, mask) -> np.ndarray:
+        """ids, mask: LongTensor [b, n] -> unit vectors [b, n, dim] as float32 numpy."""
         torch = self._torch
-        n = max(len(x) for x in batch_ids)
-        ids = torch.full((len(batch_ids), n), self.tok.pad_token_id, dtype=torch.long)
-        mask = torch.zeros((len(batch_ids), n), dtype=torch.long)
-        for i, x in enumerate(batch_ids):
-            ids[i, :len(x)] = torch.tensor(x)
-            mask[i, :len(x)] = 1
         with torch.no_grad():
             out = self.model(input_ids=ids.to(self.device),
                              attention_mask=mask.to(self.device)).last_hidden_state
-            out = torch.nn.functional.normalize(self.linear(out), dim=2).cpu().numpy()
-        return [out[i, 1:len(x) - 1].astype(np.float32) for i, x in enumerate(batch_ids)]
+            out = torch.nn.functional.normalize(self.linear(out), dim=2)
+        return out.cpu().numpy().astype(np.float32)
+
+    def _body(self, text: str, budget: int) -> list[int]:
+        return self.tok(text, add_special_tokens=False, truncation=True,
+                        max_length=max(1, budget))["input_ids"]
+
+    def _doc_ids(self, text: str) -> list[int]:
+        if self.markers == "legacy":
+            return self.tok("[D] " + text, truncation=True, max_length=self.doc_maxlen)["input_ids"]
+        return ([self.tok.cls_token_id, self._d_marker] + self._body(text, self.doc_maxlen - 3)
+                + [self.tok.sep_token_id])
 
     # ----------------------------------------------------------------- public
     def encode_query(self, text: str) -> np.ndarray:
-        ids = self._ids(text, True, self.query_maxlen)
-        if self.augment_queries and len(ids) < self.query_maxlen:
-            # [MASK] padding acts as learned query expansion; the masks are attended to
-            # and their vectors are kept. Helps short queries, neutral on long ones.
-            pad = [self.tok.mask_token_id] * (self.query_maxlen - len(ids))
-            return self._run_keep(ids + pad, drop={0, len(ids) - 1})   # drop [CLS], [SEP]
-        return self._run([ids])[0]
-
-    def _run_keep(self, seq: list[int], drop: set[int]) -> np.ndarray:
         torch = self._torch
-        ids = torch.tensor([seq])
-        with torch.no_grad():
-            out = self.model(input_ids=ids.to(self.device),
-                             attention_mask=torch.ones_like(ids).to(self.device)).last_hidden_state[0]
-            out = torch.nn.functional.normalize(self.linear(out), dim=1).cpu().numpy()
-        keep = [i for i in range(len(seq)) if i not in drop]
-        return out[keep].astype(np.float32)
+        if self.markers == "colbert":
+            ids = ([self.tok.cls_token_id, self._q_marker] + self._body(text, self.query_maxlen - 3)
+                   + [self.tok.sep_token_id])
+            n_real = len(ids)
+            ids = ids + [self.tok.mask_token_id] * (self.query_maxlen - n_real)
+            mask = [1] * n_real + [0] * (self.query_maxlen - n_real)
+            return self._forward(torch.tensor([ids]), torch.tensor([mask]))[0]
+        ids = self.tok("[Q] " + text, truncation=True, max_length=self.query_maxlen)["input_ids"]
+        n_real = len(ids)
+        if self.augment_queries and n_real < self.query_maxlen:
+            # colvec's variant: [MASK] padding that IS attended to; drop [CLS] and [SEP], keep masks
+            ids = ids + [self.tok.mask_token_id] * (self.query_maxlen - n_real)
+            out = self._forward(torch.tensor([ids]), torch.ones((1, len(ids)), dtype=torch.long))[0]
+            keep = [i for i in range(len(ids)) if i not in (0, n_real - 1)]
+            return out[keep]
+        return self._forward(torch.tensor([ids]), torch.ones((1, n_real), dtype=torch.long))[0][1:-1]
 
     def encode_doc(self, text: str) -> np.ndarray:
-        return self._run([self._ids(text, False, self.doc_maxlen)])[0]
+        return self.encode_docs([text])[0]
 
     def encode_docs(self, texts: list[str], batch_size: int = 16) -> list[np.ndarray]:
-        out: list[np.ndarray] = []
+        torch = self._torch
+        result: list[np.ndarray] = []
         for s in range(0, len(texts), batch_size):
-            out.extend(self._run([self._ids(t, False, self.doc_maxlen)
-                                  for t in texts[s:s + batch_size]]))
-        return out
+            batch = [self._doc_ids(t) for t in texts[s:s + batch_size]]
+            n = max(len(x) for x in batch)
+            ids = torch.full((len(batch), n), self.tok.pad_token_id, dtype=torch.long)
+            mask = torch.zeros((len(batch), n), dtype=torch.long)
+            for i, x in enumerate(batch):
+                ids[i, :len(x)] = torch.tensor(x)
+                mask[i, :len(x)] = 1
+            out = self._forward(ids, mask)
+            for i, x in enumerate(batch):
+                if self.markers == "colbert":
+                    keep = [j for j, tid in enumerate(x) if tid not in self._skip]
+                    result.append(out[i, keep])
+                else:
+                    result.append(out[i, 1:len(x) - 1])
+        return result
 
 
 class HashEncoder:

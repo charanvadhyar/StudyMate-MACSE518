@@ -40,35 +40,57 @@ class Quantizer:
 
     # ---------------------------------------------------------------- training
     @staticmethod
-    def train(vectors: np.ndarray, cfg: IndexConfig, sample_size: int = 200_000,
+    def train(vectors: np.ndarray, cfg: IndexConfig, sample_size: int | None = None,
               seed: int = 42, n_init: int = 3, max_iter: int = 100,
-              verbose: bool = False) -> "Quantizer":
-        from sklearn.cluster import MiniBatchKMeans
+              trainer: str = "sklearn", verbose: bool = False) -> "Quantizer":
+        """Train centroids and PQ codebooks.
 
+        trainer="sklearn"  MiniBatchKMeans, as in colvec. Default sample: 200,000 vectors.
+        trainer="faiss"    full k-means from FAISS (needs `pip install faiss-cpu`).
+                           Default sample: up to 256 vectors per centroid, FAISS's own rule.
+        """
+        if trainer not in ("sklearn", "faiss"):
+            raise ValueError("trainer must be 'sklearn' or 'faiss'")
         vectors = np.asarray(vectors, dtype=np.float32)
         n = vectors.shape[0]
-        if n < cfg.k_ivf:
-            raise ValueError(f"need at least k_ivf={cfg.k_ivf} training vectors, got {n}")
+        if n < max(cfg.k_ivf, cfg.k_pq):
+            raise ValueError(f"need at least {max(cfg.k_ivf, cfg.k_pq)} training vectors, got {n}")
+        if sample_size is None:
+            sample_size = 200_000 if trainer == "sklearn" else max(200_000, 256 * cfg.k_ivf)
         rng = np.random.default_rng(seed)
         sample = vectors if n <= sample_size else vectors[rng.choice(n, sample_size, replace=False)]
-
-        if verbose:
-            print(f"[quantizer] k-means: {cfg.k_ivf} centroids on {len(sample):,} vectors")
-        km = MiniBatchKMeans(n_clusters=cfg.k_ivf, batch_size=4096, n_init=n_init,
-                             max_iter=max_iter, random_state=seed)
-        km.fit(sample)
-        centroids = km.cluster_centers_.astype(np.float32)
-
-        residuals = sample - centroids[_nearest(sample, centroids)]
+        sample = np.ascontiguousarray(sample)
         sub = cfg.dim // cfg.m_pq
-        codebooks = np.zeros((cfg.m_pq, cfg.k_pq, sub), dtype=np.float32)
-        if residuals.shape[0] < cfg.k_pq:
-            raise ValueError(f"need at least k_pq={cfg.k_pq} training vectors")
-        for m in range(cfg.m_pq):
-            km = MiniBatchKMeans(n_clusters=cfg.k_pq, batch_size=4096, n_init=n_init,
-                                 max_iter=max_iter, random_state=seed + 1 + m)
-            km.fit(residuals[:, m * sub:(m + 1) * sub])
-            codebooks[m] = km.cluster_centers_
+        if verbose:
+            print(f"[quantizer] {trainer} k-means: {cfg.k_ivf} centroids on {len(sample):,} vectors")
+
+        if trainer == "faiss":
+            import faiss
+
+            km = faiss.Kmeans(cfg.dim, cfg.k_ivf, niter=25, nredo=1, seed=seed, verbose=False)
+            km.train(sample)
+            centroids = np.array(km.centroids, dtype=np.float32).reshape(cfg.k_ivf, cfg.dim)
+            residuals = np.ascontiguousarray(sample - centroids[_nearest(sample, centroids)])
+            pq = faiss.ProductQuantizer(cfg.dim, cfg.m_pq, int(np.log2(cfg.k_pq)))
+            if 2 ** pq.nbits != cfg.k_pq:
+                raise ValueError("the faiss trainer needs k_pq to be a power of two")
+            pq.cp.seed = seed
+            pq.train(residuals)
+            codebooks = faiss.vector_to_array(pq.centroids).reshape(cfg.m_pq, cfg.k_pq, sub).copy()
+        else:
+            from sklearn.cluster import MiniBatchKMeans
+
+            km = MiniBatchKMeans(n_clusters=cfg.k_ivf, batch_size=4096, n_init=n_init,
+                                 max_iter=max_iter, random_state=seed)
+            km.fit(sample)
+            centroids = km.cluster_centers_.astype(np.float32)
+            residuals = sample - centroids[_nearest(sample, centroids)]
+            codebooks = np.zeros((cfg.m_pq, cfg.k_pq, sub), dtype=np.float32)
+            for m in range(cfg.m_pq):
+                km = MiniBatchKMeans(n_clusters=cfg.k_pq, batch_size=4096, n_init=n_init,
+                                     max_iter=max_iter, random_state=seed + 1 + m)
+                km.fit(residuals[:, m * sub:(m + 1) * sub])
+                codebooks[m] = km.cluster_centers_
         if verbose:
             print(f"[quantizer] PQ: {cfg.m_pq} codebooks x {cfg.k_pq} entries trained")
         return Quantizer(cfg, centroids, codebooks)
@@ -84,6 +106,16 @@ class Quantizer:
         for m in range(self.cfg.m_pq):
             codes[:, m] = _nearest(residuals[:, m * s:(m + 1) * s], self.codebooks[m])
         return cids.astype(np.uint16), codes
+
+    def encode_assigned(self, vectors: np.ndarray, cids: np.ndarray) -> np.ndarray:
+        """PQ codes relative to GIVEN centroid ids (used after pooling by centroid)."""
+        vectors = np.asarray(vectors, dtype=np.float32)
+        residuals = vectors - self.centroids[np.asarray(cids, dtype=np.int64)]
+        codes = np.empty((vectors.shape[0], self.cfg.m_pq), dtype=np.uint8)
+        s = self._sub
+        for m in range(self.cfg.m_pq):
+            codes[:, m] = _nearest(residuals[:, m * s:(m + 1) * s], self.codebooks[m])
+        return codes
 
     def decode(self, cids: np.ndarray, codes: np.ndarray) -> np.ndarray:
         """Approximate reconstruction, for tests and diagnostics."""

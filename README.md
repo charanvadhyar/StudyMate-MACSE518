@@ -5,6 +5,16 @@ Built standalone first; StudyMate will call it through the HTTP sidecar.
 
 **Private until the patent application is filed. Do not publish code, results or write-ups.**
 
+## Repository layout
+
+| Folder | What it is | Deployed to |
+|---|---|---|
+| `smdb/`, `kernel/`, `scripts/`, `deploy/sidecar/` | Retrieval index and its HTTP sidecar (Python, Rust kernel) | Railway service `retrieval` |
+| `backend/` | StudyMate API (Node, Express) and the Cassandra cluster files in `backend/deploy/cassandra/` | Railway services `api`, `cassandra-1..3` |
+| `frontend/` | StudyMate web app (React) | Vercel |
+
+Secrets stay in each folder's `.env` (ignored). `books/` (copyrighted textbooks) and database dumps are never committed.
+
 ## What it does
 
 - **Index**: every token vector is stored as a centroid id plus a product-quantized

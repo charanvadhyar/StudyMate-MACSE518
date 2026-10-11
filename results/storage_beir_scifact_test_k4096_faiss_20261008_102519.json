@@ -1,0 +1,64 @@
+{
+  "dataset": "beir/scifact/test",
+  "k_ivf": 4096,
+  "trainer": "faiss",
+  "queries": 300,
+  "rows": [
+    {
+      "representation": "exact (float32)",
+      "vectors_per_chunk": 266.8030098398611,
+      "bytes_per_chunk": 136603.14103800888,
+      "ndcg10": 0.6701624004095863,
+      "overlap10": 1.0
+    },
+    {
+      "representation": "full m=32",
+      "vectors_per_chunk": 266.8030098398611,
+      "bytes_per_chunk": 9071.302334555277,
+      "ndcg10": 0.6683921231183748,
+      "overlap10": 0.9186666666666666
+    },
+    {
+      "representation": "full m=16",
+      "vectors_per_chunk": 266.8030098398611,
+      "bytes_per_chunk": 4802.4541771175,
+      "ndcg10": 0.6610899843707123,
+      "overlap10": 0.8466666666666667
+    },
+    {
+      "representation": "cpool m=32",
+      "vectors_per_chunk": 121.98533667759985,
+      "bytes_per_chunk": 4147.501447038395,
+      "ndcg10": 0.6659604334816109,
+      "overlap10": 0.881
+    },
+    {
+      "representation": "cpool m=16",
+      "vectors_per_chunk": 121.98533667759985,
+      "bytes_per_chunk": 2195.736060196797,
+      "ndcg10": 0.6459936125765555,
+      "overlap10": 0.8180000000000001
+    },
+    {
+      "representation": "hpool 2 m=32",
+      "vectors_per_chunk": 133.515531545437,
+      "bytes_per_chunk": 4539.528072544858,
+      "ndcg10": 0.6659376559662729,
+      "overlap10": 0.9003333333333333
+    },
+    {
+      "representation": "hpool 3 m=32",
+      "vectors_per_chunk": 89.45437005595215,
+      "bytes_per_chunk": 3041.448581902373,
+      "ndcg10": 0.663555373729039,
+      "overlap10": 0.8146666666666667
+    },
+    {
+      "representation": "centroid-only",
+      "vectors_per_chunk": 121.98533667759985,
+      "bytes_per_chunk": 243.9706733551997,
+      "ndcg10": 0.5870191920365643,
+      "overlap10": 0.5796666666666667
+    }
+  ]
+}

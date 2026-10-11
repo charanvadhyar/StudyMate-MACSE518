@@ -40,10 +40,16 @@ def maxsim_by_group(token_scores: np.ndarray, group: np.ndarray) -> tuple[np.nda
     Returns (group ids [g], scores [g]) where score = sum over query tokens of the
     best-matching token of that chunk among the n tokens given.
     """
+    gids, best = best_by_group(token_scores, group)
+    return gids, best.sum(axis=0)
+
+
+def best_by_group(token_scores: np.ndarray, group: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Like maxsim_by_group, but returns the per-query-token maxima before they are summed:
+    (group ids [g], best [nq, g])."""
     if group.shape[0] == 0:
-        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float32)
+        return np.zeros(0, dtype=np.int64), np.zeros((token_scores.shape[0], 0), dtype=np.float32)
     order = np.argsort(group, kind="stable")
     g = group[order]
     starts = np.flatnonzero(np.r_[True, g[1:] != g[:-1]])
-    best = np.maximum.reduceat(token_scores[:, order], starts, axis=1)   # [nq, groups]
-    return g[starts], best.sum(axis=0)
+    return g[starts], np.maximum.reduceat(token_scores[:, order], starts, axis=1)

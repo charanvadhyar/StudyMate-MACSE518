@@ -5,12 +5,31 @@ services:
     image: cassandra:5.0
     container_name: smdb-cassandra
     ports:
-      - "9042:9042"
+      - "9043:9042"   # host port 9043, so it can run beside an existing Cassandra on 9042
     environment:
       - CASSANDRA_CLUSTER_NAME=smdb
       - MAX_HEAP_SIZE=2G
       - HEAP_NEWSIZE=400M
     volumes:
       - smdb-cassandra-data:/var/lib/cassandra
+
+  # Experiment (docker/Dockerfile.jdk21): the same Cassandra on Java 21 with the Vector API on,
+  # i.e. the fastest the SAI/jvector baseline can run. Unsupported by Cassandra 5.0.
+  #   docker compose --profile jdk21 up -d --build cassandra-jdk21
+  cassandra-jdk21:
+    profiles: ["jdk21"]
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.jdk21
+    container_name: smdb-cassandra-jdk21
+    ports:
+      - "9044:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=smdb21
+      - MAX_HEAP_SIZE=2G
+      - HEAP_NEWSIZE=400M
+    volumes:
+      - smdb-cassandra21-data:/var/lib/cassandra
 volumes:
   smdb-cassandra-data:
+  smdb-cassandra21-data:

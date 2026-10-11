@@ -9,4 +9,16 @@ data/
 kernel/target/
 *.egg-info/
 .pytest_cache/
-run_log.txt
+# source textbooks are copyrighted: keep them local, never commit them
+books/
+
+# monorepo: Node backend and React frontend live in backend/ and frontend/
+node_modules/
+.env.local
+build/
+.vercel/
+*.log
+uploads/
+# local database dumps and query output can hold user rows: never commit
+*.cql.dump
+studymate_dump.cql

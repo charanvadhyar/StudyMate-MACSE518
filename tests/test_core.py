@@ -91,6 +91,20 @@ def test_quantizer_reduces_error_and_roundtrips(data, tmp_path):
     assert Quantizer.load(str(tmp_path / "q.npz")) == quant
 
 
+def test_faiss_trainer_is_comparable():
+    pytest.importorskip("faiss")
+    _, docs, _ = _corpus()
+    v = np.concatenate(docs)
+    errs = {}
+    for trainer in ("sklearn", "faiss"):
+        q = Quantizer.train(v, CFG, trainer=trainer, n_init=1, max_iter=30)
+        cids, codes = q.encode(v)
+        errs[trainer] = float(np.linalg.norm(v - q.decode(cids, codes), axis=1).mean())
+    assert errs["faiss"] < 1.25 * errs["sklearn"]
+    with pytest.raises(ValueError):
+        Quantizer.train(v, CFG, trainer="nope")
+
+
 def test_scores_match_decoded_dot_product(data):
     _, docs, queries, quant = data
     q, v = queries[0], docs[3]
@@ -269,3 +283,84 @@ def test_metrics():
     assert ndcg_at_k(["b", "a"], {"a": 1}, 10) == pytest.approx(1 / np.log2(3))
     assert ndcg_at_k(["b"], {"a": 1}, 10) == 0.0
     assert overlap_at_k(["a", "x", "c"], ["a", "b", "c"], 3) == pytest.approx(2 / 3)
+
+
+# ------------------------------------------------- compact layouts (ids-only postings, pooling)
+def test_ids_only_postings_store_codes_once_and_rerank_exactly(store, data):
+    import dataclasses
+    ids, docs, queries, quant = data
+    cfg = dataclasses.replace(CFG, postings="ids")
+    q2 = Quantizer(cfg, quant.centroids, quant.codebooks)
+    index, scope = _load(store, data, q2)
+    parts = store.read_partitions(cfg, scope, list(range(cfg.k_ivf)))
+    assert sum(len(p.doc_ids) for p in parts) > 0
+    assert all(p.codes.shape[0] == 0 for p in parts)               # no codes in posting rows
+    assert store.partition_sizes(cfg, scope).sum() == sum(len(v) for v in docs)
+    for q in queries[:4]:
+        ref = _reference(quant, docs, q)
+        want = np.argsort(-ref, kind="stable")[:10]
+        res, st = index.search(scope, q, 10, centroids=list(range(cfg.k_ivf)), rerank=len(ids))
+        assert [r.doc_id for r in res] == [ids[i] for i in want]
+        np.testing.assert_allclose([r.score for r in res], ref[want], atol=1e-3)
+        assert st.tokens_scored == 0
+    hits = sum(index.search(scope, q, 5, planner="fixed", nprobe=2, rerank=20)[0][0].doc_id == ids[n * 4]
+               for n, q in enumerate(queries))
+    assert hits >= len(queries) - 1
+    assert index.delete(scope, ids[3]) and store.read_doc_tokens(cfg, scope, [ids[3]]) == {}
+
+
+def test_single_copy_layout_keeps_codes_once_and_mixes_precisions(store, data):
+    import dataclasses
+    ids, docs, queries, quant = data
+    cfg = dataclasses.replace(CFG, postings="single")
+    q2 = Quantizer(cfg, quant.centroids, quant.codebooks)
+    index, scope = _load(store, data, q2)
+    kept = store.read_doc_tokens(cfg, scope, ids[:5])
+    assert all(c.shape[0] == len(v) and codes.shape[0] == 0            # centroid ids only
+               for (c, codes), v in zip((kept[d] for d in ids[:5]), docs))
+    for q in queries[:4]:
+        ref = _reference(quant, docs, q)
+        want = np.argsort(-ref, kind="stable")[:10]
+        # every partition read -> every vector is scored from its code -> exact PQ ranking
+        res, _ = index.search(scope, q, 10, centroids=list(range(cfg.k_ivf)), rerank=len(ids))
+        assert [r.doc_id for r in res] == [ids[i] for i in want]
+        np.testing.assert_allclose([r.score for r in res], ref[want], atol=1e-3)
+        # few partitions read -> the rest of each chunk is scored by centroid: never below stage 1
+        r1, _ = index.search(scope, q, 10, planner="fixed", nprobe=1, rerank=0)
+        r2, _ = index.search(scope, q, 10, planner="fixed", nprobe=1, rerank=50)
+        s1 = {r.doc_id: r.score for r in r1}
+        assert all(r.score >= s1[r.doc_id] - 1e-4 for r in r2 if r.doc_id in s1)
+    hits = sum(index.search(scope, q, 5, planner="fixed", nprobe=2, rerank=20)[0][0].doc_id == ids[n * 4]
+               for n, q in enumerate(queries))
+    assert hits >= len(queries) - 1
+    assert index.delete(scope, ids[3]) and store.read_doc_tokens(cfg, scope, [ids[3]]) == {}
+    assert all(ids[3] not in p.doc_ids for p in store.read_partitions(cfg, scope, list(range(cfg.k_ivf))))
+
+
+@pytest.mark.parametrize("pool", ["hierarchical", "centroid"])
+def test_pooling_stores_fewer_vectors_and_still_retrieves(pool, data):
+    ids, docs, queries, quant = data
+    store = MemoryStore()
+    index = Index(store, quant, sizes_ttl_s=0, pool=pool, pool_factor=2)
+    stored = sum(index.add("s", d, v, replace=False) for d, v in zip(ids, docs))
+    total = sum(len(v) for v in docs)
+    assert stored < total and store.partition_sizes(CFG, "s").sum() == stored
+    if pool == "hierarchical":
+        assert stored <= 0.55 * total + len(docs)
+    hits = sum(index.search("s", q, 5, planner="fixed", nprobe=2)[0][0].doc_id == ids[n * 4]
+               for n, q in enumerate(queries))
+    assert hits >= len(queries) - 2
+    with pytest.raises(ValueError):
+        Index(store, quant, pool="nope")
+
+
+def test_pool_by_centroid_keeps_one_vector_per_centroid(data):
+    from smdb.pooling import pool_by_centroid, pool_hierarchical
+    _, docs, _, quant = data
+    v = docs[0]
+    cids = quant.encode(v)[0]
+    pooled, keep = pool_by_centroid(v, cids)
+    assert len(keep) == len(set(cids.tolist())) == len(pooled)
+    np.testing.assert_allclose(np.linalg.norm(pooled, axis=1), 1.0, atol=1e-5)
+    assert len(pool_hierarchical(v, 2)) == int(np.ceil(len(v) / 2))
+    assert len(pool_hierarchical(v, 1)) == len(v)

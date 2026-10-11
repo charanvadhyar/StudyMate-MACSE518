@@ -1,0 +1,259 @@
+{
+  "dataset": "beir/scifact/test",
+  "store": "memory",
+  "markers": "legacy",
+  "config": {
+    "dim": 128,
+    "k_ivf": 1024,
+    "m_pq": 32,
+    "k_pq": 256,
+    "n_buckets": 1
+  },
+  "chunks": 5183,
+  "tokens": 1382840,
+  "queries": 300,
+  "rerank": 100,
+  "rows": [
+    {
+      "planner": "exact",
+      "partitions": 0,
+      "tokens": 1382840,
+      "ndcg10": 0.6701624004095863,
+      "overlap10": 1.0,
+      "ms": 0.0
+    },
+    {
+      "planner": "oracle",
+      "partitions": 74.38666666666667,
+      "tokens": 147718.05666666667,
+      "ndcg10": 0.6616144944323651,
+      "overlap10": 0.9096666666666667,
+      "ms": 97.18100000000001
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 1,
+      "partitions": 18.016666666666666,
+      "tokens": 29271.43666666667,
+      "ndcg10": 0.6520728418473746,
+      "overlap10": 0.882,
+      "ms": 25.619500000000002
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 2,
+      "partitions": 33.66,
+      "tokens": 49809.943333333336,
+      "ndcg10": 0.6559064465183115,
+      "overlap10": 0.8943333333333333,
+      "ms": 37.665499999999994
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 4,
+      "partitions": 62.42333333333333,
+      "tokens": 86779.50666666667,
+      "ndcg10": 0.6549030131994317,
+      "overlap10": 0.9016666666666667,
+      "ms": 57.335
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 8,
+      "partitions": 112.72,
+      "tokens": 149792.17666666667,
+      "ndcg10": 0.6606110611134851,
+      "overlap10": 0.9056666666666667,
+      "ms": 111.217
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 16,
+      "partitions": 197.43666666666667,
+      "tokens": 255144.83666666667,
+      "ndcg10": 0.6616144944323651,
+      "overlap10": 0.9083333333333333,
+      "ms": 319.57349999999997
+    },
+    {
+      "planner": "mass",
+      "budget": 4,
+      "tau": 0.02,
+      "partitions": 4,
+      "tokens": 5761.363333333334,
+      "ndcg10": 0.5496245202980375,
+      "overlap10": 0.6890000000000001,
+      "ms": 18.305500000000002
+    },
+    {
+      "planner": "mass",
+      "budget": 8,
+      "tau": 0.02,
+      "partitions": 8,
+      "tokens": 11677.066666666668,
+      "ndcg10": 0.6388539587814772,
+      "overlap10": 0.8220000000000001,
+      "ms": 18.387
+    },
+    {
+      "planner": "mass",
+      "budget": 16,
+      "tau": 0.02,
+      "partitions": 16,
+      "tokens": 25531.466666666667,
+      "ndcg10": 0.6497106227560466,
+      "overlap10": 0.884,
+      "ms": 26.753
+    },
+    {
+      "planner": "mass",
+      "budget": 32,
+      "tau": 0.02,
+      "partitions": 32,
+      "tokens": 54410.85,
+      "ndcg10": 0.6593858590211078,
+      "overlap10": 0.8963333333333333,
+      "ms": 46.4585
+    },
+    {
+      "planner": "mass",
+      "budget": 64,
+      "tau": 0.02,
+      "partitions": 64,
+      "tokens": 107267.81,
+      "ndcg10": 0.660427137142005,
+      "overlap10": 0.9046666666666667,
+      "ms": 83.7045
+    },
+    {
+      "planner": "mass",
+      "budget": 128,
+      "tau": 0.02,
+      "partitions": 128,
+      "tokens": 202721.03,
+      "ndcg10": 0.6616144944323651,
+      "overlap10": 0.9086666666666667,
+      "ms": 152.4875
+    },
+    {
+      "planner": "mass",
+      "budget": 4,
+      "tau": 0.05,
+      "partitions": 4,
+      "tokens": 4997.496666666667,
+      "ndcg10": 0.5863906135175757,
+      "overlap10": 0.715,
+      "ms": 12.623999999999999
+    },
+    {
+      "planner": "mass",
+      "budget": 8,
+      "tau": 0.05,
+      "partitions": 8,
+      "tokens": 10674.22,
+      "ndcg10": 0.6421641924497199,
+      "overlap10": 0.8286666666666667,
+      "ms": 15.045
+    },
+    {
+      "planner": "mass",
+      "budget": 16,
+      "tau": 0.05,
+      "partitions": 16,
+      "tokens": 25826.15,
+      "ndcg10": 0.6558072874178046,
+      "overlap10": 0.879,
+      "ms": 23.322499999999998
+    },
+    {
+      "planner": "mass",
+      "budget": 32,
+      "tau": 0.05,
+      "partitions": 32,
+      "tokens": 60214.96,
+      "ndcg10": 0.659239779851645,
+      "overlap10": 0.8986666666666667,
+      "ms": 40.796
+    },
+    {
+      "planner": "mass",
+      "budget": 64,
+      "tau": 0.05,
+      "partitions": 64,
+      "tokens": 123810.34333333334,
+      "ndcg10": 0.658236346532765,
+      "overlap10": 0.9033333333333333,
+      "ms": 76.8015
+    },
+    {
+      "planner": "mass",
+      "budget": 128,
+      "tau": 0.05,
+      "partitions": 128,
+      "tokens": 228890.84666666668,
+      "ndcg10": 0.660427137142005,
+      "overlap10": 0.9086666666666667,
+      "ms": 157.261
+    },
+    {
+      "planner": "mass",
+      "budget": 4,
+      "tau": 0.1,
+      "partitions": 4,
+      "tokens": 5283.44,
+      "ndcg10": 0.5734953459458574,
+      "overlap10": 0.681,
+      "ms": 13.029
+    },
+    {
+      "planner": "mass",
+      "budget": 8,
+      "tau": 0.1,
+      "partitions": 8,
+      "tokens": 11295.636666666667,
+      "ndcg10": 0.618925427016376,
+      "overlap10": 0.8076666666666666,
+      "ms": 15.5765
+    },
+    {
+      "planner": "mass",
+      "budget": 16,
+      "tau": 0.1,
+      "partitions": 16,
+      "tokens": 27696.833333333332,
+      "ndcg10": 0.6479056602515012,
+      "overlap10": 0.86,
+      "ms": 23.563000000000002
+    },
+    {
+      "planner": "mass",
+      "budget": 32,
+      "tau": 0.1,
+      "partitions": 32,
+      "tokens": 63446.193333333336,
+      "ndcg10": 0.651171566735858,
+      "overlap10": 0.8813333333333333,
+      "ms": 43.0285
+    },
+    {
+      "planner": "mass",
+      "budget": 64,
+      "tau": 0.1,
+      "partitions": 64,
+      "tokens": 131106.06,
+      "ndcg10": 0.6538514636101459,
+      "overlap10": 0.896,
+      "ms": 80.3485
+    },
+    {
+      "planner": "mass",
+      "budget": 128,
+      "tau": 0.1,
+      "partitions": 128,
+      "tokens": 244088.59,
+      "ndcg10": 0.657232913213885,
+      "overlap10": 0.9046666666666667,
+      "ms": 204.457
+    }
+  ]
+}

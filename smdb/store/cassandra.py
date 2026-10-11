@@ -32,6 +32,7 @@ class CassandraStore(Store):
             request_timeout=30.0,
         )
         self._cluster = Cluster(contact_points or ["127.0.0.1"], port=port, auth_provider=auth,
+                                protocol_version=4,   # v5 framing: "CRC mismatch" errors in the driver
                                 execution_profiles={EXEC_PROFILE_DEFAULT: profile})
         self._session = self._cluster.connect()
         if init_schema:
@@ -58,6 +59,7 @@ class CassandraStore(Store):
         self._q_post_put = p(f"INSERT INTO {ks}.postings (scope_id, centroid_id, bucket, doc_id, codes) VALUES (?, ?, ?, ?, ?)")
         self._q_post_del = p(f"DELETE FROM {ks}.postings WHERE scope_id = ? AND centroid_id = ? AND bucket = ? AND doc_id = ?")
         self._q_post_get = p(f"SELECT doc_id, codes FROM {ks}.postings WHERE scope_id = ? AND centroid_id = ? AND bucket = ?")
+        self._q_post_row = p(f"SELECT codes FROM {ks}.postings WHERE scope_id = ? AND centroid_id = ? AND bucket = ? AND doc_id = ?")
         self._q_doc_put = p(f"INSERT INTO {ks}.doc_tokens (scope_id, doc_id, centroid_ids, codes) VALUES (?, ?, ?, ?)")
         self._q_doc_get = p(f"SELECT centroid_ids, codes FROM {ks}.doc_tokens WHERE scope_id = ? AND doc_id = ?")
         self._q_doc_del = p(f"DELETE FROM {ks}.doc_tokens WHERE scope_id = ? AND doc_id = ?")
@@ -89,19 +91,29 @@ class CassandraStore(Store):
 
     # ----------------------------------------------------------------- writes
     def write_doc(self, cfg, scope, doc_id, cids, codes) -> None:
-        b = bucket_of(doc_id, cfg.n_buckets)
-        groups = group_by_centroid(cids, codes)
-        self._many(self._q_post_put,
-                   [(scope, c, b, doc_id, g.tobytes()) for c, g in groups.items()])
-        self._session.execute(self._q_doc_put, (
-            scope, doc_id,
-            np.ascontiguousarray(cids, dtype="<u2").tobytes(),
-            np.ascontiguousarray(codes, dtype=np.uint8).tobytes(),
-        ))
+        self.write_docs(cfg, scope, [(doc_id, cids, codes)])
+
+    def write_docs(self, cfg, scope, items) -> None:
+        """Bulk path: every posting row of the batch goes out in one concurrent wave, and the
+        partition counters get ONE update per centroid for the whole batch. Counter updates
+        are read-before-write in Cassandra, so per-chunk increments dominate ingest time."""
+        posts, docs = [], []
+        added: dict[int, int] = {}
+        for doc_id, cids, codes in items:
+            b = bucket_of(doc_id, cfg.n_buckets)
+            for c, g in group_by_centroid(cids, codes).items():
+                posts.append((scope, c, b, doc_id, g.tobytes() if cfg.postings != "ids" else b""))
+                added[c] = added.get(c, 0) + g.shape[0]
+            docs.append((scope, doc_id,
+                         np.ascontiguousarray(cids, dtype="<u2").tobytes(),
+                         b"" if cfg.postings == "single"
+                         else np.ascontiguousarray(codes, dtype=np.uint8).tobytes()))
+        self._many(self._q_post_put, posts)
+        self._many(self._q_doc_put, docs)
         # Counters last: they are not idempotent, so a retried ingest of the same
         # chunk must go through delete_doc first (Index.add does this).
-        self._many(self._q_stat_add, [(g.shape[0], scope, c) for c, g in groups.items()])
-        self.io.writes += 2 * len(groups) + 1
+        self._many(self._q_stat_add, [(n, scope, c) for c, n in added.items()])
+        self.io.writes += len(posts) + len(docs) + len(added)
 
     def delete_doc(self, cfg, scope, doc_id) -> bool:
         row = self._session.execute(self._q_doc_get, (scope, doc_id)).one()
@@ -131,6 +143,17 @@ class CassandraStore(Store):
             self.io.rows_read += len(doc_ids)
             self.io.bytes_read += sum(len(x) for x in blobs)
             out.append(_to_partition(int(c), doc_ids, blobs, cfg.m_pq))
+        return out
+
+    def read_posting_rows(self, cfg, scope, keys):
+        results = self._many(self._q_post_row,
+                             [(scope, int(c), bucket_of(d, cfg.n_buckets), d) for c, d in keys])
+        self.io.row_reads += len(keys)
+        out = []
+        for rs in results:
+            row = rs.one()
+            blob = row.codes if row is not None and row.codes else b""
+            out.append(np.frombuffer(blob, dtype=np.uint8).reshape(-1, cfg.m_pq))
         return out
 
     def read_doc_tokens(self, cfg, scope, doc_ids):

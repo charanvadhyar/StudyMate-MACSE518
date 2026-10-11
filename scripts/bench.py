@@ -1,8 +1,14 @@
-"""Planner benchmark: fixed per-token probing vs the joint `mass` planner vs the oracle.
+"""End-to-end benchmark of the index.
 
-  python scripts/bench.py --dataset beir/scifact/test          # encodes with ColBERT, caches in data/
-  python scripts/bench.py --synthetic                          # no model; checks the pipeline only
-  python scripts/bench.py --dataset beir/scifact/test --store cassandra
+  python -u scripts/bench.py --dataset beir/scifact/test --k-ivf 4096 --trainer faiss
+  python -u scripts/bench.py ... --postings ids --pool hierarchical     # compact layout
+  python -u scripts/bench.py ... --model answerdotai/answerai-colbert-small-v1 --markers colbert
+  python -u scripts/bench.py ... --store cassandra                      # same run on a live cluster
+  python -u scripts/bench.py ... --sweep full                           # planner study (fixed vs mass vs oracle)
+  python -u scripts/bench.py --synthetic --k-ivf 256                    # no model; pipeline check only
+
+The default sweep varies partitions probed and rerank depth, and reports total storage
+reads per query (partitions + chunks fetched) next to quality.
 
 For every setting it reports, averaged over queries:
   parts     posting partitions read            (the cost the planner controls)
@@ -18,6 +24,7 @@ Synthetic numbers say nothing about retrieval quality; use them only as a smoke 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import statistics
 import sys
@@ -49,12 +56,15 @@ def synthetic(n_docs=2000, n_queries=60, dim=128, topics=200, seed=0):
     return [f"d{i}" for i in range(n_docs)], docs, queries, None
 
 
-def load_beir(name: str, markers: str, device: str, max_queries: int | None):
+def load_beir(name: str, markers: str, device: str, max_queries: int | None,
+              model: str | None = None, augment: bool = False):
     import ir_datasets
     from tqdm import tqdm
-    from smdb.encoder import ColbertEncoder
+    from smdb.encoder import DEFAULT_MODEL, ColbertEncoder, model_tag
 
-    cache = Path("data") / f"{name.replace('/', '_')}_{markers}.npz"
+    model = model or DEFAULT_MODEL
+    tag = "" if model == DEFAULT_MODEL else "_" + model_tag(model)
+    cache = Path("data") / f"{name.replace('/', '_')}{tag}_{markers}{'_aug' if augment else ''}.npz"
     ds = ir_datasets.load(name)
     qrels: dict[str, dict[str, int]] = {}
     for r in ds.qrels_iter():
@@ -70,7 +80,7 @@ def load_beir(name: str, markers: str, device: str, max_queries: int | None):
         docs = np.split(z["doc_vecs"], np.cumsum(z["doc_lens"])[:-1])
         cached_q = {str(i): v for i, v in zip(z["q_ids"], np.split(z["q_vecs"], np.cumsum(z["q_lens"])[:-1]))}
     else:
-        enc = ColbertEncoder(device=device, markers=markers)
+        enc = ColbertEncoder(model, device=device, markers=markers, augment_queries=augment)
         doc_ids, texts = [], []
         for d in ds.docs_iter():
             doc_ids.append(d.doc_id)
@@ -88,123 +98,197 @@ def load_beir(name: str, markers: str, device: str, max_queries: int | None):
     return doc_ids, docs, [cached_q[q.query_id] for q in queries], [qrels[q.query_id] for q in queries]
 
 
+def variant_tag(args) -> str:
+    from smdb.encoder import DEFAULT_MODEL, model_tag
+    parts = [f"k{args.k_ivf}", args.trainer, f"m{args.m_pq}", args.postings]
+    if args.pool != "none":
+        parts.append(f"{args.pool[:4]}{args.pool_factor if args.pool == 'hierarchical' else ''}")
+    if (args.model or DEFAULT_MODEL) != DEFAULT_MODEL:
+        parts.append(model_tag(args.model))
+    if args.markers != "legacy":
+        parts.append(args.markers)
+    return "_".join(parts)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="beir/scifact/test")
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--store", choices=["memory", "cassandra"], default="memory")
     ap.add_argument("--keyspace", default="smdb_bench")
+    ap.add_argument("--port", type=int, default=9042)
+    ap.add_argument("--container", help="Docker container name of that Cassandra; if given, the on-disk "
+                                        "size of the keyspace's index tables is measured (use a fresh --keyspace)")
+    ap.add_argument("--model", help="Stanford-format ColBERT checkpoint (default colbert-ir/colbertv2.0)")
     ap.add_argument("--markers", default="legacy", choices=["legacy", "colbert"])
+    ap.add_argument("--augment", action="store_true", help="legacy markers only: [MASK]-pad queries")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--k-ivf", type=int, default=1024)
     ap.add_argument("--m-pq", type=int, default=32)
-    ap.add_argument("--rerank", type=int, default=100)
+    ap.add_argument("--trainer", choices=["sklearn", "faiss"], default="sklearn",
+                    help="k-means implementation for centroids and PQ codebooks")
+    ap.add_argument("--postings", choices=["codes", "ids", "single"], default="codes",
+                    help="ids = store PQ codes once (posting rows carry chunk ids only)")
+    ap.add_argument("--pool", choices=["none", "hierarchical", "centroid"], default="none")
+    ap.add_argument("--pool-factor", type=int, default=2)
+    ap.add_argument("--sweep", choices=["quick", "full"], default="quick")
+    ap.add_argument("--nprobes", type=int, nargs="*", default=[1, 2, 4])
+    ap.add_argument("--reranks", type=int, nargs="*", default=[20, 50, 100])
+    ap.add_argument("--rerank", type=int, default=100, help="rerank depth for --sweep full")
+    ap.add_argument("--refine", type=float, nargs="*", default=[],
+                    help="--postings single: also run with these refine slacks (see Index.search)")
     ap.add_argument("--max-queries", type=int)
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)      # show progress even when piped to a file
 
+    from smdb.encoder import DEFAULT_MODEL, model_tag
     name = "synthetic" if args.synthetic else args.dataset
     doc_ids, docs, queries, qrels = (synthetic() if args.synthetic else
-                                     load_beir(args.dataset, args.markers, args.device, args.max_queries))
+                                     load_beir(args.dataset, args.markers, args.device, args.max_queries,
+                                               args.model, args.augment))
     n_tokens = sum(len(v) for v in docs)
     print(f"{name}: {len(docs):,} chunks, {n_tokens:,} tokens, {len(queries)} queries")
 
     all_vecs = np.concatenate(docs)
-    cfg = IndexConfig(dim=all_vecs.shape[1], k_ivf=args.k_ivf, m_pq=args.m_pq)
-    qpath = Path("data") / f"quantizer_{name.replace('/', '_')}_{args.markers}_{args.k_ivf}_{args.m_pq}.npz"
+    mtag = "" if (args.model or DEFAULT_MODEL) == DEFAULT_MODEL else "_" + model_tag(args.model)
+    qpath = Path("data") / (f"quantizer_{name.replace('/', '_')}{mtag}_{args.markers}_{args.k_ivf}_{args.m_pq}"
+                            f"{'' if args.trainer == 'sklearn' else '_' + args.trainer}.npz")
     if qpath.exists():
         quant = Quantizer.load(str(qpath))
     else:
         t = time.perf_counter()
-        quant = Quantizer.train(all_vecs, cfg, verbose=True)
+        quant = Quantizer.train(all_vecs, IndexConfig(dim=all_vecs.shape[1], k_ivf=args.k_ivf, m_pq=args.m_pq),
+                                trainer=args.trainer, verbose=True)
         qpath.parent.mkdir(exist_ok=True)
         quant.save(str(qpath))
         print(f"quantizer trained in {time.perf_counter() - t:.0f}s")
+    cfg = dataclasses.replace(quant.cfg, postings=args.postings)
+    quant = Quantizer(cfg, quant.centroids, quant.codebooks)
 
     if args.store == "cassandra":
         from smdb.store import CassandraStore
-        store = CassandraStore(keyspace=args.keyspace)
+        store = CassandraStore(port=args.port, keyspace=args.keyspace)
     else:
         store = MemoryStore()
-    scope = f"bench:{name}"
-    cids, codes = quant.encode(all_vecs)
-    token_centroids = cids.astype(np.int64)
-    if int(store.partition_sizes(cfg, scope).sum()) == n_tokens:
+    tag = variant_tag(args)
+    scope = f"bench:{name}:{tag}"
+    index = Index(store, quant, pool=args.pool, pool_factor=args.pool_factor)
+
+    t = time.perf_counter()
+    quantized = [(d, *index.quantize(v)) for d, v in zip(doc_ids, docs) if len(v)]
+    t_quant = time.perf_counter() - t
+    stored = sum(len(c) for _, c, _ in quantized)
+    rows_post = sum(len(np.unique(c)) for _, c, _ in quantized)
+    id_bytes = sum(len(d) for d, _, _ in quantized) / max(1, len(quantized))
+    logical = (stored * (2 + cfg.m_pq) + (stored * cfg.m_pq if cfg.postings == "codes" else 0)
+               + rows_post * id_bytes) / len(docs)
+    print(f"layout {tag}: {stored / len(docs):.0f} vectors per chunk ({stored / n_tokens:.0%} of tokens), "
+          f"about {logical:,.0f} bytes per chunk before Cassandra overhead "
+          f"(pool + quantize {len(docs) / t_quant:,.0f} chunks/s)")
+    if int(store.partition_sizes(cfg, scope).sum()) == stored:
         print("store already holds this corpus; skipping ingest")
     else:
-        t = time.perf_counter()
-        ofs = 0
         fresh = int(store.partition_sizes(cfg, scope).sum()) == 0
-        for d, v in zip(doc_ids, docs):
-            n = len(v)
-            if n:
-                if not fresh:          # partial earlier load: replace chunk by chunk
+        t = time.perf_counter()
+        for s0 in range(0, len(quantized), 256):
+            batch = quantized[s0:s0 + 256]
+            if not fresh:              # partial earlier load: replace chunk by chunk
+                for d, _, _ in batch:
                     store.delete_doc(cfg, scope, d)
-                store.write_doc(cfg, scope, d, cids[ofs:ofs + n], codes[ofs:ofs + n])
-            ofs += n
+            store.write_docs(cfg, scope, batch)
         dt = time.perf_counter() - t
         print(f"ingest: {len(docs) / dt:,.0f} chunks/s ({dt:.1f}s, quantization excluded)")
-    index = Index(store, quant)
+    disk = None
+    if args.store == "cassandra" and args.container:
+        from smdb.diskusage import disk_bytes
+        sizes_d = [disk_bytes(args.container, args.keyspace, t) for t in ("postings", "doc_tokens", "partition_stats")]
+        if all(x is not None for x in sizes_d):
+            disk = sum(sizes_d)
+            print(f"on disk (postings + doc_tokens + stats, everything in keyspace {args.keyspace}): "
+                  f"{disk / len(docs):,.0f} bytes per chunk ({disk / 1e6:,.1f} MB)")
+    index._sizes.clear()
     sizes = index.sizes(scope)
     print(f"partitions: {int((sizes > 0).sum())} non-empty of {cfg.k_ivf}, "
-          f"median {int(np.median(sizes[sizes > 0]))} tokens, max {int(sizes.max())}")
+          f"median {int(np.median(sizes[sizes > 0]))} vectors, max {int(sizes.max())}")
 
     exact = ExactCorpus(doc_ids, docs)
     truth = [[d for d, _ in exact.search(q, 10)] for q in queries]
-    oracle = [exact.oracle_centroids(q, token_centroids, 10) for q in queries]
 
-    settings = [("exact", {})]
-    settings += [("oracle", {})]
-    settings += [("fixed", {"nprobe": n}) for n in (1, 2, 4, 8, 16)]
-    settings += [("mass", {"budget": b, "tau": tau})
-                 for tau in (0.02, 0.05, 0.1) for b in (4, 8, 16, 32, 64, 128)]
+    if args.sweep == "full":
+        token_centroids = quant.encode(all_vecs)[0].astype(np.int64)
+        oracle = [exact.oracle_centroids(q, token_centroids, 10) for q in queries]
+        settings = [("exact", {}), ("oracle", {"rerank": args.rerank})]
+        settings += [("fixed", {"nprobe": n, "rerank": args.rerank}) for n in (1, 2, 4, 8, 16)]
+        settings += [("mass", {"budget": b, "tau": tau, "rerank": args.rerank})
+                     for tau in (0.02, 0.05, 0.1) for b in (4, 8, 16, 32, 64, 128)]
+    else:
+        oracle = None
+        settings = [("exact", {})]
+        settings += [("fixed", {"nprobe": n, "rerank": r}) for n in args.nprobes for r in args.reranks]
+        settings += [("fixed", {"nprobe": n, "rerank": r, "refine": f})
+                     for f in args.refine for n in args.nprobes for r in args.reranks]
+    del all_vecs
 
     rows = []
     for planner, params in settings:
-        parts, toks, nd, ov, lat = [], [], [], [], []
+        parts, fetch, nd, ov, lat, lat1, lat2, rowsf = [], [], [], [], [], [], [], []
         for i, q in enumerate(queries):
             if planner == "exact":
                 got = truth[i]
-                parts.append(0); toks.append(n_tokens); lat.append(0.0)
+                parts.append(0); fetch.append(0); lat.append(0.0); lat1.append(0.0); lat2.append(0.0); rowsf.append(0)
             else:
-                kw = {"centroids": oracle[i]} if planner == "oracle" else {"planner": planner, **params}
-                res, st = index.search(scope, q, 10, rerank=args.rerank, **kw)
+                kw = dict(params)
+                if planner == "oracle":
+                    kw["centroids"] = oracle[i]
+                else:
+                    kw["planner"] = planner
+                res, st = index.search(scope, q, 10, **kw)
                 got = [r.doc_id for r in res]
-                parts.append(st.partitions_read); toks.append(st.tokens_scored)
+                parts.append(st.partitions_read); fetch.append(st.reranked)
+                rowsf.append(st.rows_fetched)
                 lat.append(st.ms["total"])
+                lat1.append(st.ms.get("read_partitions", 0.0))      # stage 1: posting partition reads
+                lat2.append(st.ms.get("read_docs", 0.0))            # stage 2: candidate fetch
             ov.append(overlap_at_k(got, truth[i], 10))
             if qrels is not None:
                 nd.append(ndcg_at_k(got, qrels[i], 10))
         rows.append({"planner": planner, **params,
-                     "partitions": statistics.mean(parts), "tokens": statistics.mean(toks),
+                     "partitions": statistics.mean(parts), "fetched": statistics.mean(fetch),
+                     "reads": statistics.mean(a + b for a, b in zip(parts, fetch)),
+                     "rows": statistics.mean(rowsf),
                      "ndcg10": statistics.mean(nd) if nd else None,
-                     "overlap10": statistics.mean(ov), "ms": statistics.median(lat)})
+                     "overlap10": statistics.mean(ov), "ms": statistics.median(lat),
+                     "ms_parts": statistics.median(lat1), "ms_fetch": statistics.median(lat2)})
 
-    print(f"\n{'planner':<8}{'params':<24}{'parts':>8}{'tokens':>10}{'nDCG@10':>9}{'ov@10':>8}{'ms':>8}")
+    print(f"\n{'planner':<8}{'params':<32}{'parts':>7}{'fetch':>7}{'reads':>7}{'rows':>7}{'nDCG@10':>9}{'ov@10':>8}{'ms':>8}{'parts ms':>10}{'fetch ms':>10}")
     for r in rows:
-        p = ", ".join(f"{k}={r[k]}" for k in ("nprobe", "budget", "tau") if k in r)
+        p = ", ".join(f"{k}={r[k]}" for k in ("nprobe", "budget", "tau", "rerank", "refine") if k in r)
         nd = f"{r['ndcg10']:.4f}" if r["ndcg10"] is not None else "-"
-        print(f"{r['planner']:<8}{p:<24}{r['partitions']:>8.1f}{r['tokens']:>10.0f}{nd:>9}"
-              f"{r['overlap10']:>8.3f}{r['ms']:>8.1f}")
+        print(f"{r['planner']:<8}{p:<32}{r['partitions']:>7.1f}{r['fetched']:>7.1f}{r['reads']:>7.1f}{r['rows']:>7.1f}{nd:>9}"
+              f"{r['overlap10']:>8.3f}{r['ms']:>8.1f}{r['ms_parts']:>10.1f}{r['ms_fetch']:>10.1f}")
 
-    key = "ndcg10" if qrels is not None else "overlap10"
-    print(f"\nPartitions needed by `mass` to match each `fixed` setting on {key}:")
-    for f in (r for r in rows if r["planner"] == "fixed"):
-        ok = [r for r in rows if r["planner"] == "mass" and r[key] >= f[key]]
-        if ok:
-            b = min(ok, key=lambda r: r["partitions"])
-            print(f"  fixed nprobe={f['nprobe']:<3} {f['partitions']:6.1f} parts -> mass "
-                  f"{b['partitions']:6.1f} parts (budget={b['budget']}, tau={b['tau']}): "
-                  f"{f['partitions'] / b['partitions']:.2f}x fewer")
-        else:
-            print(f"  fixed nprobe={f['nprobe']:<3} {f['partitions']:6.1f} parts -> no mass setting reached it")
+    if args.sweep == "full":
+        key = "ndcg10" if qrels is not None else "overlap10"
+        print(f"\nMatched cost: each `fixed` setting against the `mass` budget closest in partitions read ({key})")
+        for f in (r for r in rows if r["planner"] == "fixed"):
+            budgets = sorted({r["budget"] for r in rows if r["planner"] == "mass"})
+            b = min(budgets, key=lambda x: abs(x - f["partitions"]))
+            best = max((r for r in rows if r["planner"] == "mass" and r["budget"] == b), key=lambda r: r[key])
+            print(f"  fixed nprobe={f['nprobe']:<3} {f['partitions']:6.1f} parts {f[key]:.4f}   |   "
+                  f"mass budget={b:<4} {best['partitions']:6.1f} parts {best[key]:.4f} (tau={best['tau']})   "
+                  f"diff {best[key] - f[key]:+.4f}")
+        print("  Differences under about 0.01 are within noise for a few hundred queries.")
 
     out = Path(args.out)
     out.mkdir(exist_ok=True)
-    path = out / f"bench_{name.replace('/', '_')}_{args.store}_{datetime.now():%Y%m%d_%H%M%S}.json"
-    path.write_text(json.dumps({"dataset": name, "store": args.store, "markers": args.markers,
-                                "config": cfg.__dict__, "chunks": len(docs), "tokens": n_tokens,
-                                "queries": len(queries), "rerank": args.rerank, "rows": rows}, indent=2))
+    path = out / f"bench_{name.replace('/', '_')}_{args.store}_{tag}_{datetime.now():%Y%m%d_%H%M%S}.json"
+    path.write_text(json.dumps({"dataset": name, "store": args.store, "variant": tag,
+                                "model": args.model or DEFAULT_MODEL, "markers": args.markers,
+                                "config": dataclasses.asdict(cfg), "pool": args.pool,
+                                "chunks": len(docs), "tokens": n_tokens, "vectors_stored": stored,
+                                "bytes_per_chunk_logical": logical, "disk_bytes": disk, "queries": len(queries),
+                                "sweep": args.sweep, "rows": rows}, indent=2))
     print(f"\nsaved {path}")
 
 

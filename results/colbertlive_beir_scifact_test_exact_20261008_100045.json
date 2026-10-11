@@ -1,0 +1,49 @@
+{
+  "dataset": "beir/scifact/test",
+  "ann": "exact",
+  "doc_pool": 2,
+  "query_pool": 0.03,
+  "vectors": 692011,
+  "chunks": 5183,
+  "raw_bytes_per_chunk": 68359.95215126374,
+  "ingest_s": null,
+  "disk_bytes": null,
+  "rows": [
+    {
+      "n_ann_docs": 171,
+      "n_maxsim": 20,
+      "ann_queries": 21.80666666666667,
+      "fetched": 20,
+      "ndcg10": 0.6582151611955985,
+      "overlap10": 0.8036666666666666,
+      "ms": 180.58935005683452
+    },
+    {
+      "n_ann_docs": 171,
+      "n_maxsim": 50,
+      "ann_queries": 21.80666666666667,
+      "fetched": 50,
+      "ndcg10": 0.6682445678492946,
+      "overlap10": 0.895,
+      "ms": 173.05195005610585
+    },
+    {
+      "n_ann_docs": 240,
+      "n_maxsim": 20,
+      "ann_queries": 21.80666666666667,
+      "fetched": 20,
+      "ndcg10": 0.664064223925287,
+      "overlap10": 0.8206666666666667,
+      "ms": 151.18100005201995
+    },
+    {
+      "n_ann_docs": 240,
+      "n_maxsim": 50,
+      "ann_queries": 21.80666666666667,
+      "fetched": 50,
+      "ndcg10": 0.6669665037432657,
+      "overlap10": 0.9033333333333333,
+      "ms": 168.7013499904424
+    }
+  ]
+}

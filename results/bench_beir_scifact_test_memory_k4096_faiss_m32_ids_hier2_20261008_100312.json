@@ -1,0 +1,133 @@
+{
+  "dataset": "beir/scifact/test",
+  "store": "memory",
+  "variant": "k4096_faiss_m32_ids_hier2",
+  "model": "colbert-ir/colbertv2.0",
+  "markers": "legacy",
+  "config": {
+    "dim": 128,
+    "k_ivf": 4096,
+    "m_pq": 32,
+    "k_pq": 256,
+    "n_buckets": 1,
+    "postings": "ids"
+  },
+  "pool": "hierarchical",
+  "chunks": 5183,
+  "tokens": 1382840,
+  "vectors_stored": 692011,
+  "bytes_per_chunk_logical": 5381.319299589119,
+  "disk_bytes": null,
+  "queries": 300,
+  "sweep": "quick",
+  "rows": [
+    {
+      "planner": "exact",
+      "partitions": 0,
+      "fetched": 0,
+      "reads": 0,
+      "ndcg10": 0.6701624004095863,
+      "overlap10": 1.0,
+      "ms": 0.0
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 1,
+      "rerank": 20,
+      "partitions": 18.683333333333334,
+      "fetched": 20,
+      "reads": 38.68333333333333,
+      "ndcg10": 0.6168675865997043,
+      "overlap10": 0.5866666666666667,
+      "ms": 4.976
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 1,
+      "rerank": 50,
+      "partitions": 18.683333333333334,
+      "fetched": 50,
+      "reads": 68.68333333333334,
+      "ndcg10": 0.6340345503248678,
+      "overlap10": 0.7243333333333334,
+      "ms": 5.851
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 1,
+      "rerank": 100,
+      "partitions": 18.683333333333334,
+      "fetched": 100,
+      "reads": 118.68333333333334,
+      "ndcg10": 0.641429569789763,
+      "overlap10": 0.7903333333333333,
+      "ms": 8.814
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 2,
+      "rerank": 20,
+      "partitions": 36.526666666666664,
+      "fetched": 20,
+      "reads": 56.526666666666664,
+      "ndcg10": 0.6211821510212918,
+      "overlap10": 0.662,
+      "ms": 6.5755
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 2,
+      "rerank": 50,
+      "partitions": 36.526666666666664,
+      "fetched": 50,
+      "reads": 86.52666666666667,
+      "ndcg10": 0.6437774131208621,
+      "overlap10": 0.7956666666666666,
+      "ms": 7.75
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 2,
+      "rerank": 100,
+      "partitions": 36.526666666666664,
+      "fetched": 100,
+      "reads": 136.52666666666667,
+      "ndcg10": 0.6560848164336105,
+      "overlap10": 0.8523333333333334,
+      "ms": 9.8765
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 4,
+      "rerank": 20,
+      "partitions": 70.63,
+      "fetched": 20,
+      "reads": 90.63,
+      "ndcg10": 0.6420677113503207,
+      "overlap10": 0.699,
+      "ms": 9.747
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 4,
+      "rerank": 50,
+      "partitions": 70.63,
+      "fetched": 50,
+      "reads": 120.63,
+      "ndcg10": 0.6508447478281939,
+      "overlap10": 0.8223333333333334,
+      "ms": 10.6175
+    },
+    {
+      "planner": "fixed",
+      "nprobe": 4,
+      "rerank": 100,
+      "partitions": 70.63,
+      "fetched": 100,
+      "reads": 170.63,
+      "ndcg10": 0.6619894103743859,
+      "overlap10": 0.8613333333333334,
+      "ms": 13.033999999999999
+    }
+  ]
+}

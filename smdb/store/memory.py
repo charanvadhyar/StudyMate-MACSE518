@@ -30,12 +30,13 @@ class MemoryStore(Store):
         b = bucket_of(doc_id, cfg.n_buckets)
         sizes = self._sizes.setdefault(scope, np.zeros(cfg.k_ivf, dtype=np.int64))
         for c, part_codes in group_by_centroid(cids, codes).items():
-            self._postings.setdefault((scope, c, b), {})[doc_id] = part_codes.tobytes()
+            blob = part_codes.tobytes() if cfg.postings != "ids" else b""
+            self._postings.setdefault((scope, c, b), {})[doc_id] = blob
             sizes[c] += part_codes.shape[0]
             self.io.writes += 1
         self._doc_tokens[(scope, doc_id)] = (
             np.ascontiguousarray(cids, dtype=np.uint16).tobytes(),
-            np.ascontiguousarray(codes, dtype=np.uint8).tobytes(),
+            b"" if cfg.postings == "single" else np.ascontiguousarray(codes, dtype=np.uint8).tobytes(),
         )
         self.io.writes += 1
 
@@ -65,6 +66,14 @@ class MemoryStore(Store):
             out.append(_to_partition(int(c), doc_ids, blobs, cfg.m_pq))
             self.io.rows_read += len(doc_ids)
             self.io.bytes_read += sum(len(x) for x in blobs)
+        return out
+
+    def read_posting_rows(self, cfg, scope, keys):
+        out = []
+        for c, d in keys:
+            self.io.row_reads += 1
+            blob = self._postings.get((scope, int(c), bucket_of(d, cfg.n_buckets)), {}).get(d, b"")
+            out.append(np.frombuffer(blob, dtype=np.uint8).reshape(-1, cfg.m_pq))
         return out
 
     def read_doc_tokens(self, cfg, scope, doc_ids):

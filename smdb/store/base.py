@@ -32,8 +32,8 @@ class Partition:
 
     centroid: int
     doc_ids: list[str]        # one entry per row
-    counts: np.ndarray        # [rows] tokens per row
-    codes: np.ndarray         # [sum(counts), m_pq] uint8
+    counts: np.ndarray        # [rows] tokens per row (all zero when postings="ids")
+    codes: np.ndarray         # [sum(counts), m_pq] uint8 (empty when postings="ids")
 
 
 @dataclass
@@ -42,11 +42,12 @@ class IOStats:
     rows_read: int = 0
     bytes_read: int = 0
     doc_token_reads: int = 0
+    row_reads: int = 0
     writes: int = 0
 
     def reset(self) -> None:
         self.partitions_read = self.rows_read = self.bytes_read = 0
-        self.doc_token_reads = self.writes = 0
+        self.doc_token_reads = self.row_reads = self.writes = 0
 
 
 class Store(ABC):
@@ -69,6 +70,13 @@ class Store(ABC):
         """Store one chunk. cids uint16 [n], codes uint8 [n, m_pq]. Does not check for an
         existing chunk with the same id; call delete_doc first when replacing."""
 
+    def write_docs(self, cfg: IndexConfig, scope: str,
+                   items: list[tuple[str, np.ndarray, np.ndarray]]) -> None:
+        """Store many chunks: items are (doc_id, cids, codes). Same contract as write_doc.
+        Backends override this when a bulk path is cheaper than chunk-by-chunk writes."""
+        for doc_id, cids, codes in items:
+            self.write_doc(cfg, scope, doc_id, cids, codes)
+
     @abstractmethod
     def delete_doc(self, cfg: IndexConfig, scope: str, doc_id: str) -> bool:
         """Remove a chunk everywhere. Returns False when it was not present."""
@@ -78,6 +86,12 @@ class Store(ABC):
     def read_partitions(self, cfg: IndexConfig, scope: str,
                         centroids: list[int]) -> list[Partition]:
         """Read the postings of the given centroids (every bucket of each)."""
+
+    def read_posting_rows(self, cfg: IndexConfig, scope: str,
+                          keys: list[tuple[int, str]]) -> list[np.ndarray]:
+        """Point reads: the PQ codes [n, m_pq] of single posting rows, one per (centroid, doc_id).
+        A missing row gives an empty array."""
+        raise NotImplementedError
 
     @abstractmethod
     def read_doc_tokens(self, cfg: IndexConfig, scope: str,
