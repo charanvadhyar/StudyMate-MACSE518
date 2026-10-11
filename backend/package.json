@@ -1,0 +1,39 @@
+{
+  "name": "studymate-backend",
+  "version": "1.0.0",
+  "description": "StudyMate - AI-powered study assistant chatbot backend (Node.js + Express + Apache Cassandra)",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "setup-db": "node src/db/setupSchema.js",
+    "seed": "node src/db/seed.js",
+    "reindex": "node src/db/reindex.js"
+  },
+  "keywords": [
+    "cassandra",
+    "nosql",
+    "chatbot",
+    "study-assistant",
+    "express"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cassandra-driver": "^4.10.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.5.1",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.3.0",
+    "pdf-parse": "^1.1.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

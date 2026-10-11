@@ -1,0 +1,36 @@
+# Local rehearsal of the Railway cluster: the same image and start-up script, three nodes.
+#   docker compose -f deploy/cassandra/docker-compose.cluster.yml up -d --build
+#   docker exec cluster-cassandra-1 nodetool status        (wait for three "UN" lines, ~3 min)
+# The backend reaches it on localhost:9045. Stop the 4.1 container on 9042 first if memory is short.
+name: cluster
+services:
+  cassandra-1:
+    build: .
+    container_name: cluster-cassandra-1
+    environment: &common
+      CASSANDRA_CLUSTER_NAME: StudyMate
+      CASSANDRA_DC: datacenter1
+      MAX_HEAP_SIZE: 768M
+      HEAP_NEWSIZE: 128M
+      RAILWAY_PRIVATE_DOMAIN: cassandra-1
+    ports: ["9045:9042"]
+    volumes: [c1:/var/lib/cassandra]
+  cassandra-2:
+    build: .
+    container_name: cluster-cassandra-2
+    environment:
+      <<: *common
+      RAILWAY_PRIVATE_DOMAIN: cassandra-2
+      SEED_HOST: cassandra-1
+      START_DELAY: "30"
+    volumes: [c2:/var/lib/cassandra]
+  cassandra-3:
+    build: .
+    container_name: cluster-cassandra-3
+    environment:
+      <<: *common
+      RAILWAY_PRIVATE_DOMAIN: cassandra-3
+      SEED_HOST: cassandra-1
+      START_DELAY: "90"
+    volumes: [c3:/var/lib/cassandra]
+volumes: { c1: {}, c2: {}, c3: {} }

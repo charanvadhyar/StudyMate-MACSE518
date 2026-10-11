@@ -1,0 +1,6 @@
+node_modules
+.env
+*.log
+_backup_before_retrieval
+deploy
+uploads
